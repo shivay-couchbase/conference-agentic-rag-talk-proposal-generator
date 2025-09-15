@@ -175,67 +175,103 @@ def main():
     st.title("KubeCon Talk Proposal Generation Helper")
     st.markdown("This tool combines historical talk data with real-time web research to create unique, high-impact talk proposals. Keep in mind that this is a tool meant to just provide suggestions for talks. Don't submit this as your own talk proposal. Always use original talk abstract written by you. You can use this for reference. ")
 
-    try:
-        # Initialize Couchbase connection once
-        if 'cb_connection' not in st.session_state:
-            with st.spinner("Connecting to Couchbase DB..."):
-                st.session_state.cb_connection = CouchbaseConnection()
-        cb = st.session_state.cb_connection
-        
-        user_query = st.text_area(
-            "Enter the core idea or topic for your talk proposal:",
-            placeholder="e.g., Using OpenTelemetry's inferred spans feature for better observability in serverless environments.",
-            height=100
-        )
+    # --- Session State Initialization ---
+    if 'history' not in st.session_state:
+        st.session_state.history = []
+    if 'cb_connection' not in st.session_state:
+        with st.spinner("Connecting to Couchbase DB..."):
+            st.session_state.cb_connection = CouchbaseConnection()
 
-        if st.button("Generate Full Proposal", type="primary"):
-            if not user_query:
-                st.warning("Please enter your talk idea first!")
-                return
+    cb = st.session_state.cb_connection
 
-            adk_research_results = ""
-            similar_talks = []
+    # --- UI Layout ---
+    user_query = st.text_area(
+        "Enter the core idea or topic for your talk proposal:",
+        placeholder="e.g., Using OpenTelemetry's inferred spans feature for better observability in serverless environments.",
+        height=100
+    )
 
+    if st.button("Generate Full Proposal", type="primary"):
+        if not user_query:
+            st.warning("Please enter your talk idea first!")
+            return
+
+        # --- Progress Bar ---
+        progress_bar = st.progress(0, text="Initializing...")
+        adk_research_results = ""
+        similar_talks = []
+
+        try:
             # Step 1: ADK Agent Research
-            with st.spinner("Step 1/3: Running Research Agent to scan the web for latest trends... (This may take a minute)"):
-                try:
-                    adk_research_results = run_adk_research(user_query)
-                    st.success("✅ Step 1: Real-time web research complete!")
-                except Exception as e:
-                    st.error(f"Failed to run ADK research agent: {e}")
-                    return
+            progress_bar.progress(10, text="Step 1/3: Researching latest trends via web... (This may take a minute)")
+            adk_research_results = run_adk_research(user_query)
+            st.success("✅ Research complete!")
 
             # Step 2: Couchbase Vector Search
-            with st.spinner("Step 2/3: Searching internal database for historical context..."):
-                similar_talks = cb.get_similar_talks(user_query)
-                st.success("✅ Step 2: Historical context search complete!")
+            progress_bar.progress(40, text="Step 2/3: Searching internal database for historical context...")
+            similar_talks = cb.get_similar_talks(user_query)
+            st.success("✅ Historical context found!")
 
             # Step 3: Final Synthesis
-            with st.spinner("Step 3/3: Synthesizing all data and generating final proposal..."):
-                if adk_research_results:
-                    final_proposal = generate_talk_suggestion(user_query, similar_talks, adk_research_results)
-                    st.success("✅ Step 3: Proposal generation complete!")
-                    
-                    st.divider()
-                    st.subheader("💡 Generated Talk Proposal")
-                    st.markdown(final_proposal)
-                    st.divider()
+            progress_bar.progress(70, text="Step 3/3: Synthesizing data and generating final proposal...")
+            if adk_research_results:
+                final_proposal = generate_talk_suggestion(user_query, similar_talks, adk_research_results)
+                progress_bar.progress(100, text="Proposal generated!")
+                time.sleep(1) # Keep the 100% bar for a second
+                progress_bar.empty() # Hide the progress bar
 
-                    # Display the context used for generation in expanders
-                    with st.expander("View Real-Time Web Analysis (from Research Agent)"):
-                        st.markdown(adk_research_results)
-                    
-                    with st.expander("View Historical Context (from Couchbase DB)"):
-                        if similar_talks:
-                            st.json(similar_talks)
-                        else:
-                            st.info("No similar historical talks were found in the database.")
-                else:
-                    st.error("Could not generate proposal without results from the research agent.")
+                # --- Editable Proposal & Download ---
+                st.divider()
+                st.subheader("💡 Generated Talk Proposal")
+                
+                edited_proposal = st.text_area(
+                    "You can edit the proposal below:",
+                    value=final_proposal,
+                    height=400,
+                    key=f"proposal_{len(st.session_state.history)}" # Unique key
+                )
 
-    except Exception as e:
-        st.error(f"A critical error occurred in the application: {str(e)}")
-        st.error("Please check your connection settings and environment variables, then refresh the page.")
+                st.download_button(
+                    label="Download as Markdown",
+                    data=edited_proposal,
+                    file_name="talk_proposal.md",
+                    mime="text/markdown",
+                )
+                
+                # --- Store in History ---
+                st.session_state.history.append({
+                    "query": user_query,
+                    "proposal": final_proposal,
+                    "research": adk_research_results,
+                    "context": similar_talks
+                })
+                
+                st.divider()
+
+                # --- Context Expanders ---
+                with st.expander("View Real-Time Web Analysis (from Research Agent)"):
+                    st.markdown(adk_research_results)
+                
+                with st.expander("View Historical Context (from Couchbase DB)"):
+                    if similar_talks:
+                        st.json(similar_talks)
+                    else:
+                        st.info("No similar historical talks were found in the database.")
+            else:
+                st.error("Could not generate proposal without results from the research agent.")
+                progress_bar.empty()
+
+        except Exception as e:
+            st.error(f"A critical error occurred: {str(e)}")
+            progress_bar.empty()
+
+    # --- History Display ---
+    if st.session_state.history:
+        st.divider()
+        st.subheader("📜 Past Generations")
+        for i, run in enumerate(reversed(st.session_state.history)):
+            with st.expander(f"Run {len(st.session_state.history) - i}: {run['query']:.50}..."):
+                st.markdown(run['proposal'])
 
 if __name__ == "__main__":
     main()
